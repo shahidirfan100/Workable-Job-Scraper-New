@@ -1,0 +1,69 @@
+{
+  "title": "Workable Jobs Scraper",
+  "description": "Scrapes job listings from jobs.workable.com using HTTP requests and Cheerio.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "keyword": {
+      "title": "Keyword",
+      "type": "string",
+      "description": "Job search keyword(s) (e.g., 'Software Engineer').",
+      "editor": "textfield",
+      "default": "developer"
+    },
+    "location": {
+      "title": "Location",
+      "type": "string",
+      "description": "Location filter (e.g., 'london', 'greece').",
+      "editor": "textfield"
+    },
+    "posted_date": {
+      "title": "Date Posted",
+      "type": "string",
+      "description": "Filter jobs by posting date.",
+      "editor": "select",
+      "enum": [
+        "anytime",
+        "24h",
+        "7d",
+        "30d"
+      ],
+      "enumTitles": [
+        "Any time",
+        "Past 24 hours",
+        "Past 7 days",
+        "Past 30 days"
+      ],
+      "default": "anytime"
+    },
+    "results_wanted": {
+      "title": "Number of jobs to scrape",
+      "type": "integer",
+      "description": "Maximum number of jobs to collect.",
+      "editor": "number",
+      "default": 50,
+      "minimum": 1
+    },
+    "maxConcurrency": {
+      "title": "Max concurrency",
+      "type": "integer",
+      "description": "Parallel HTTP requests (CheerioCrawler).",
+      "editor": "number",
+      "default": 10,
+      "minimum": 1,
+      "maximum": 50
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Select proxies to be used by the crawler.",
+      "editor": "proxy",
+      "prefill": {
+        "useApifyProxy": true
+      }
+    }
+  },
+  "required": [
+    "keyword"
+  ]
+}
