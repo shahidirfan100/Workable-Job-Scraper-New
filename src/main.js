@@ -32,12 +32,13 @@ const state = await Actor.useState('STATE', { collectedCount: 0 });
 const searchParams = new URLSearchParams({
     query: keyword,
     location: location || '',
-    orderBy: 'relevance',
     pageSize: 50, // Max supported by API
 });
 
-if (posted_date && dateMap[posted_date]) {
-    searchParams.set('created_at', dateMap[posted_date]);
+// Only add the 'created_at' parameter if a valid time range is selected.
+const apiDateFilter = dateMap[posted_date];
+if (apiDateFilter) {
+    searchParams.set('created_at', apiDateFilter);
 }
 
 const startUrl = `https://jobs.workable.com/api/v1/jobs?${searchParams.toString()}`;
