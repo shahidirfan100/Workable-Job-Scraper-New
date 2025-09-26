@@ -75,7 +75,7 @@ const crawler = new CheerioCrawler({
                     company: job.company.title,
                     location: job.location.location_str,
                     date_posted: job.published_on,
-                    url: `https://apply.workable.com/${job.company.subdomain}/j/${job.shortcode}`,
+                    url: job.url, // Use the job view URL provided by the API
                 };
 
                 // Enqueue the detail page for full scraping
