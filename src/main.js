@@ -14,42 +14,104 @@ await Actor.init();
 
 const input = (await Actor.getInput()) || {};
 const {
+  // Existing query-style inputs
   keyword = '',
   location = '',
   postedWithin = '7d',     // '24h' | '7d' | '30d' | (anything falsy = no date filter)
+
+  // NEW: allow user to paste a URL
+  listUrl = '',            // e.g. "https://jobs.workable.com/search?...", "https://jobs.workable.com/api/v1/jobs?...", or a detail "https://jobs.workable.com/view/..."
+
   results_wanted = 200,    // precise target of SAVED items
   maxConcurrency = 5,
   proxyConfiguration = null,
-  // set to false if you don't want to auto-broaden time ranges
+
+  // Auto broaden date window if not enough results
   expandDateWhenInsufficient = true,
 } = input;
 
-// Build the sequence of date filters to try, from strict → broad
+// ---------- Utilities ----------
 function buildCreatedAtPasses(postedWithin) {
   const start = dateMap[postedWithin] || null;
-  if (!expandDateWhenInsufficient) {
-    return [start]; // just one pass (possibly null)
-  }
-  // Progressive broadening based on the initial choice
+  if (!expandDateWhenInsufficient) return [start];
+
   if (start === 'past_day') return ['past_day', 'past_week', 'past_month', null];
   if (start === 'past_week') return ['past_week', 'past_month', null];
   if (start === 'past_month') return ['past_month', null];
-  // if no initial filter
-  return [null];
+  return [null]; // no initial filter
 }
+
+function isJobsHost(u) {
+  try { return new URL(u).hostname === 'jobs.workable.com'; } catch { return false; }
+}
+
+function isApiListUrl(u) {
+  try {
+    const url = new URL(u);
+    return url.hostname === 'jobs.workable.com' && url.pathname.startsWith('/api/v1/jobs');
+  } catch { return false; }
+}
+
+function isDetailUrl(u) {
+  try {
+    const url = new URL(u);
+    return url.hostname === 'jobs.workable.com' && url.pathname.startsWith('/view/');
+  } catch { return false; }
+}
+
+// Convert a non-API jobs.workable.com URL (with query string) to the API list URL
+function toApiListUrlFromSearch(u, limit, createdAt = null) {
+  const source = new URL(u);
+  const params = new URLSearchParams(source.search);
+  // Pass-through known query fields
+  const api = new URL('https://jobs.workable.com/api/v1/jobs');
+  // If original had query params, copy them; add created_at override if provided
+  for (const [k, v] of params.entries()) api.searchParams.set(k, v);
+  if (createdAt) api.searchParams.set('created_at', createdAt);
+  api.searchParams.set('limit', String(limit));
+  return api.toString();
+}
+
+// Normalize a user-provided list URL into an API URL (if possible)
+function normalizeListUrl(userUrl, limit, createdAt = null) {
+  if (!userUrl) return null;
+  // API list URL: ensure it carries a limit (<=100)
+  if (isApiListUrl(userUrl)) {
+    const u = new URL(userUrl);
+    if (!u.searchParams.get('limit')) u.searchParams.set('limit', String(limit));
+    if (createdAt !== null) {
+      // respect explicit created_at if provided
+      u.searchParams.set('created_at', createdAt);
+    }
+    // Remove page param if present; paging is given by 'paging.next'
+    u.searchParams.delete('page');
+    return u.toString();
+  }
+
+  // Detail URL: we cannot turn it into list; caller should enqueue as DETAIL directly
+  if (isDetailUrl(userUrl)) return null;
+
+  // Non-API jobs.workable.com search/browse URL with query: convert to API
+  if (isJobsHost(userUrl)) {
+    return toApiListUrlFromSearch(userUrl, limit, createdAt);
+  }
+
+  // Unsupported hosts: return null; will fall back to query inputs
+  return null;
+}
+
+// ---------- Date passes ----------
 const createdAtPasses = buildCreatedAtPasses(postedWithin);
 
-// Global state
+// ---------- State ----------
 const state = {
-  collectedCount: 0,       // incremented AFTER save
-  seen: new Set(),         // job URL dedupe across pages & passes
+  collectedCount: 0,   // incremented AFTER save
+  seen: new Set(),     // URL-level dedupe across pages & passes
 };
 
-// Create proxy
 const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration);
 
-// ---------- Helpers ----------
-/** Extract job types from JSON-LD or visible tags */
+// ---------- Detail extractors ----------
 function extractJobTypes($) {
   let job_types = null;
 
@@ -69,7 +131,7 @@ function extractJobTypes($) {
         const et = node.employmentType;
         if (et) {
           job_types = Array.isArray(et)
-            ? et.map((x) => String(x).trim()).filter(Boolean)
+            ? et.map(x => String(x).trim()).filter(Boolean)
             : [String(et).trim()].filter(Boolean);
           break;
         }
@@ -96,24 +158,23 @@ function extractJobTypes($) {
   return job_types;
 }
 
-/** Extract description (HTML/text), date_posted, and location */
 function extractDetailFields($, url, seed) {
   const titleFallback =
     $('[data-ui="job-title"]').first().text().trim()
-      || $('h1').first().text().trim()
-      || null;
+    || $('h1').first().text().trim()
+    || null;
 
   const companyFallback =
     $('[data-ui="company-name"]').first().text().trim()
-      || $('[itemprop="hiringOrganization"]').text().trim()
-      || $('[rel="author"]').first().text().trim()
-      || null;
+    || $('[itemprop="hiringOrganization"]').text().trim()
+    || $('[rel="author"]').first().text().trim()
+    || null;
 
   const locationFallback =
     $('[data-ui="job-location"]').first().text().trim()
-      || $('[itemprop="jobLocation"]').text().trim()
-      || $('.job-stats, .JobDetails__meta').find('li:contains("Location")').next().text().trim()
-      || null;
+    || $('[itemprop="jobLocation"]').text().trim()
+    || $('.job-stats, .JobDetails__meta').find('li:contains("Location")').next().text().trim()
+    || null;
 
   const safeTitle = seed?.title ?? titleFallback;
   const safeCompany = seed?.company ?? companyFallback;
@@ -125,7 +186,7 @@ function extractDetailFields($, url, seed) {
   let date_posted_extracted = null;
   let location_extracted = safeLocationSeed || null;
 
-  // 1) JSON-LD JobPosting
+  // JSON-LD JobPosting
   try {
     const ldNodes = $('script[type="application/ld+json"]');
     for (let i = 0; i < ldNodes.length; i++) {
@@ -180,7 +241,7 @@ function extractDetailFields($, url, seed) {
     log.debug(`JSON-LD parse failed: ${e.message}`);
   }
 
-  // 2) DOM fallbacks for description
+  // DOM fallbacks
   if (!description_html) {
     const node = $('[data-ui="job-description"], [data-ui="job-content"], .job-description, .JobDetails__content').first();
     const html = node.html();
@@ -199,21 +260,18 @@ function extractDetailFields($, url, seed) {
     if (txt) description_text = txt;
   }
 
-  // 3) DOM fallback for location
   if (!location_extracted) {
     const locNode = $('[data-ui="job-location"], .job-stats, .JobDetails__meta').first();
     const locText = locNode.text().replace(/\s+/g, ' ').trim();
     if (locText) location_extracted = locText;
   }
 
-  // 4) Fallback for relative "Posted ..." strings
   if (!date_posted_extracted) {
     const postedCandidate = $('*').filter((_, el) => /posted\s/i.test($(el).text())).first().text();
     const m = postedCandidate && postedCandidate.match(/posted\s+([^|•\n\r]+?)(?:\s+ago)?(?:\s|$)/i);
     if (m) date_posted_extracted = m[1].trim();
   }
 
-  // Job types
   const job_types = extractJobTypes($);
 
   return {
@@ -228,29 +286,68 @@ function extractDetailFields($, url, seed) {
   };
 }
 
-// Build initial LIST seeds for each created_at pass (strict → broad)
-function buildListSeedUrls() {
-  const urls = [];
+// ---------- Build seeds ----------
+
+// If the user provided a direct URL, we prioritize it.
+//  - API list URL => use it
+//  - jobs.workable.com search URL => convert to API list URL
+//  - job detail URL => scrape it directly
+function buildSeedsFromListUrl(userUrl) {
+  const seeds = { listSeeds: [], detailSeeds: [] };
+  if (!userUrl) return seeds;
+
+  const limit = Math.min(results_wanted || 100, 100);
+
+  if (isDetailUrl(userUrl)) {
+    seeds.detailSeeds.push({
+      url: userUrl,
+      userData: { label: 'DETAIL', url: userUrl },
+    });
+    return seeds;
+  }
+
+  // Try to normalize to API list URL; if fails, we return empty and let query inputs drive
+  const api = normalizeListUrl(userUrl, limit, null /* don't force created_at on direct URLs */);
+  if (api) {
+    seeds.listSeeds.push({
+      url: api,
+      userData: { label: 'LIST' },
+      options: { responseType: 'json' },
+    });
+  }
+  return seeds;
+}
+
+// If no listUrl or not usable, fall back to keyword/location with progressive date passes
+function buildSeedsFromQueryInputs() {
+  const seeds = [];
+  const limit = Math.min(results_wanted || 100, 100);
+
   for (const pass of createdAtPasses) {
     const params = new URLSearchParams();
     if (keyword) params.set('q', keyword);
     if (location) params.set('location', location);
     if (pass) params.set('created_at', pass);
+    params.set('limit', String(limit));
 
-    // ask for as many as we still want (but Workable caps at 100)
-    const pageLimit = Math.min(results_wanted || 100, 100);
-    params.set('limit', String(pageLimit));
-
-    urls.push(`https://jobs.workable.com/api/v1/jobs?${params.toString()}`);
+    seeds.push({
+      url: `https://jobs.workable.com/api/v1/jobs?${params.toString()}`,
+      userData: { label: 'LIST' },
+      options: { responseType: 'json' },
+    });
   }
-  return urls;
+  return seeds;
 }
 
-const listSeeds = buildListSeedUrls();
+const directSeeds = buildSeedsFromListUrl(listUrl);
+const listSeeds = directSeeds.listSeeds.length
+  ? directSeeds.listSeeds
+  : buildSeedsFromQueryInputs();
+const detailSeeds = directSeeds.detailSeeds || [];
 
 // ---------- Crawler ----------
 const crawler = new CheerioCrawler({
-  proxyConfiguration: proxyConfig,
+  proxyConfiguration: await Actor.createProxyConfiguration(proxyConfiguration),
   maxConcurrency,
   requestHandlerTimeoutSecs: 60,
   navigationTimeoutSecs: 60,
@@ -260,7 +357,6 @@ const crawler = new CheerioCrawler({
     const { label } = userData;
 
     if (label === 'LIST') {
-      // Expect { jobs: [...], paging: { next: "..." } }
       if (!json || !Array.isArray(json.jobs)) {
         log.warning(`Invalid list payload for ${request.url}`);
         return;
@@ -290,7 +386,6 @@ const crawler = new CheerioCrawler({
         }]);
       }
 
-      // Follow next page if API provides it AND we still need more
       if (paging?.next && state.collectedCount < results_wanted) {
         await addRequests([{
           url: paging.next,
@@ -299,7 +394,6 @@ const crawler = new CheerioCrawler({
         }]);
       }
     } else if (label === 'DETAIL') {
-      // Scrape detail page
       const result = extractDetailFields($, request.url, userData);
       await Dataset.pushData(result);
       state.collectedCount++;
@@ -312,15 +406,8 @@ const crawler = new CheerioCrawler({
   },
 });
 
-// Seed all passes (strict → broad). Dedupe by state.seen and stop automatically
-// once results_wanted is reached. If fewer exist, we simply exhaust all pages/passes.
-await crawler.addRequests(
-  listSeeds.map((url) => ({
-    url,
-    userData: { label: 'LIST' },
-    options: { responseType: 'json' },
-  })),
-);
+// Seed requests
+await crawler.addRequests([...listSeeds, ...detailSeeds]);
 
 await crawler.run();
 
