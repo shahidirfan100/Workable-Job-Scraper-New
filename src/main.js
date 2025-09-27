@@ -1,7 +1,6 @@
 // src/main.js
 import { Actor } from 'apify';
 import { CheerioCrawler, Dataset, log } from 'crawlee';
-import { gotScraping } from 'got-scraping'; // kept if you want to use later
 import { load as cheerioLoad } from 'cheerio';
 
 // Maps input time ranges to Workable API parameters
@@ -17,30 +16,36 @@ const input = (await Actor.getInput()) || {};
 const {
   keyword = '',
   location = '',
-  postedWithin = '7d',   // one of: '24h' | '7d' | '30d'
-  results_wanted = 200,  // target number of SAVED items
+  postedWithin = '7d',     // '24h' | '7d' | '30d' | (anything falsy = no date filter)
+  results_wanted = 200,    // precise target of SAVED items
   maxConcurrency = 5,
   proxyConfiguration = null,
+  // set to false if you don't want to auto-broaden time ranges
+  expandDateWhenInsufficient = true,
 } = input;
 
-const apiDateFilter = dateMap[postedWithin] || null;
+// Build the sequence of date filters to try, from strict → broad
+function buildCreatedAtPasses(postedWithin) {
+  const start = dateMap[postedWithin] || null;
+  if (!expandDateWhenInsufficient) {
+    return [start]; // just one pass (possibly null)
+  }
+  // Progressive broadening based on the initial choice
+  if (start === 'past_day') return ['past_day', 'past_week', 'past_month', null];
+  if (start === 'past_week') return ['past_week', 'past_month', null];
+  if (start === 'past_month') return ['past_month', null];
+  // if no initial filter
+  return [null];
+}
+const createdAtPasses = buildCreatedAtPasses(postedWithin);
 
+// Global state
 const state = {
-  collectedCount: 0, // incremented AFTER Dataset.pushData in DETAIL
+  collectedCount: 0,       // incremented AFTER save
+  seen: new Set(),         // job URL dedupe across pages & passes
 };
 
-// ---------- Build the first API URL (with higher limit) ----------
-const searchParams = new URLSearchParams();
-if (keyword) searchParams.set('q', keyword);
-if (location) searchParams.set('location', location);
-if (apiDateFilter) searchParams.set('created_at', apiDateFilter);
-
-// Workable supports limit (max ~100). Ask for as many as we still want, capped at 100.
-const pageLimit = Math.min(results_wanted || 100, 100);
-searchParams.set('limit', String(pageLimit));
-
-const startUrl = `https://jobs.workable.com/api/v1/jobs?${searchParams.toString()}`;
-
+// Create proxy
 const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration);
 
 // ---------- Helpers ----------
@@ -49,7 +54,6 @@ function extractJobTypes($) {
   let job_types = null;
 
   try {
-    // Prefer JSON-LD JobPosting.employmentType
     const ldNodes = $('script[type="application/ld+json"]');
     for (let i = 0; i < ldNodes.length; i++) {
       const jsonText = $(ldNodes[i]).contents().text().trim();
@@ -73,7 +77,6 @@ function extractJobTypes($) {
       if (job_types) break;
     }
 
-    // Fallback: visible meta/tags/badges
     if (!job_types) {
       const candidates = [];
       const re = /full[-\s]?time|part[-\s]?time|contract|temporary|intern(ship)?|freelance|remote/i;
@@ -122,7 +125,7 @@ function extractDetailFields($, url, seed) {
   let date_posted_extracted = null;
   let location_extracted = safeLocationSeed || null;
 
-  // 1) JSON-LD JobPosting: description, datePosted, jobLocation
+  // 1) JSON-LD JobPosting
   try {
     const ldNodes = $('script[type="application/ld+json"]');
     for (let i = 0; i < ldNodes.length; i++) {
@@ -177,7 +180,7 @@ function extractDetailFields($, url, seed) {
     log.debug(`JSON-LD parse failed: ${e.message}`);
   }
 
-  // 2) DOM selectors for description if JSON-LD missing
+  // 2) DOM fallbacks for description
   if (!description_html) {
     const node = $('[data-ui="job-description"], [data-ui="job-content"], .job-description, .JobDetails__content').first();
     const html = node.html();
@@ -188,11 +191,11 @@ function extractDetailFields($, url, seed) {
       const $$ = cheerioLoad(description_html);
       description_text = $$.text().replace(/\s+\n/g, '\n').replace(/\s{2,}/g, ' ').trim() || null;
     } catch {
-      description_text = $('[data-ui="job-description"], [data-ui="job-content"], .job-description, .JobDetails__content').text().trim() || null;
+      description_text = $('[data-ui="job-description"], [data-ui="job-content"], .JobDetails__content, .job-description').text().trim() || null;
     }
   }
   if (!description_text) {
-    const txt = $('[data-ui="job-description"], [data-ui="job-content"], .job-description, .JobDetails__content').text().trim();
+    const txt = $('[data-ui="job-description"], [data-ui="job-content"], .JobDetails__content, .job-description').text().trim();
     if (txt) description_text = txt;
   }
 
@@ -225,6 +228,26 @@ function extractDetailFields($, url, seed) {
   };
 }
 
+// Build initial LIST seeds for each created_at pass (strict → broad)
+function buildListSeedUrls() {
+  const urls = [];
+  for (const pass of createdAtPasses) {
+    const params = new URLSearchParams();
+    if (keyword) params.set('q', keyword);
+    if (location) params.set('location', location);
+    if (pass) params.set('created_at', pass);
+
+    // ask for as many as we still want (but Workable caps at 100)
+    const pageLimit = Math.min(results_wanted || 100, 100);
+    params.set('limit', String(pageLimit));
+
+    urls.push(`https://jobs.workable.com/api/v1/jobs?${params.toString()}`);
+  }
+  return urls;
+}
+
+const listSeeds = buildListSeedUrls();
+
 // ---------- Crawler ----------
 const crawler = new CheerioCrawler({
   proxyConfiguration: proxyConfig,
@@ -237,7 +260,7 @@ const crawler = new CheerioCrawler({
     const { label } = userData;
 
     if (label === 'LIST') {
-      // Expect { jobs: [...], paging: { next: "https://jobs.workable.com/api/v1/jobs?..." } }
+      // Expect { jobs: [...], paging: { next: "..." } }
       if (!json || !Array.isArray(json.jobs)) {
         log.warning(`Invalid list payload for ${request.url}`);
         return;
@@ -246,27 +269,29 @@ const crawler = new CheerioCrawler({
       const { jobs, paging } = json;
 
       for (const job of jobs) {
-        // Stop scheduling new details if we already reached target
         if (state.collectedCount >= results_wanted) break;
+
+        const detailUrl = job.url;
+        if (!detailUrl || state.seen.has(detailUrl)) continue;
+        state.seen.add(detailUrl);
 
         const detailUserData = {
           label: 'DETAIL',
-          title: job.title,
+          title: job.title || null,
           company: job.company?.title || null,
           location: job.location?.location_str || null,
           date_posted: job.published_on || null,
-          url: job.url, // job view URL
+          url: detailUrl,
         };
 
         await addRequests([{
-          url: detailUserData.url,
+          url: detailUrl,
           userData: detailUserData,
         }]);
       }
 
-      // Follow next page if present and we still need more
+      // Follow next page if API provides it AND we still need more
       if (paging?.next && state.collectedCount < results_wanted) {
-        log.info(`Enqueuing next list page: ${paging.next}`);
         await addRequests([{
           url: paging.next,
           userData: { label: 'LIST' },
@@ -287,14 +312,17 @@ const crawler = new CheerioCrawler({
   },
 });
 
-// Seed with the first list page (JSON)
-await crawler.addRequests([{
-  url: startUrl,
-  userData: { label: 'LIST' },
-  options: { responseType: 'json' },
-}]);
+// Seed all passes (strict → broad). Dedupe by state.seen and stop automatically
+// once results_wanted is reached. If fewer exist, we simply exhaust all pages/passes.
+await crawler.addRequests(
+  listSeeds.map((url) => ({
+    url,
+    userData: { label: 'LIST' },
+    options: { responseType: 'json' },
+  })),
+);
 
 await crawler.run();
 
-log.info('Scraper finished.');
+log.info(`Scraper finished. Saved ${state.collectedCount} items (target was ${results_wanted}).`);
 await Actor.exit();
