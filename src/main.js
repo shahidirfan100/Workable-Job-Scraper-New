@@ -122,7 +122,101 @@ const crawler = new CheerioCrawler({
             const safeDate = userData.date_posted ?? null;
 
 
-            const descriptionNode = $('[data-ui="job-description"]');
+            
+            // Attempt multiple strategies to get description, date_posted, and location
+            let description_html = null;
+            let description_text = null;
+            let date_posted_extracted = null;
+            let location_extracted = safeLocation;
+
+            // 1) JSON-LD JobPosting (most reliable for description/date/location)
+            try {
+                const ldNodes = $('script[type="application/ld+json"]');
+                for (let i = 0; i < ldNodes.length; i++) {
+                    const raw = $(ldNodes[i]).contents().text().trim();
+                    if (!raw) continue;
+                    let data;
+                    try { data = JSON.parse(raw); } catch (_) { continue; }
+                    const items = Array.isArray(data) ? data : [data];
+                    for (const node of items) {
+                        if (!node) continue;
+                        const type = node['@type'];
+                        const isJob = Array.isArray(type) ? type.includes('JobPosting') : type === 'JobPosting';
+                        if (!isJob) continue;
+
+                        if (!description_html && node.description) {
+                            description_html = String(node.description).trim() || null;
+                        }
+                        if (!date_posted_extracted && node.datePosted) {
+                            date_posted_extracted = String(node.datePosted).trim();
+                        }
+                        if (!location_extracted) {
+                            // jobLocation may be object, array, or string
+                            const jl = node.jobLocation;
+                            const toStr = (x) => (x == null ? '' : String(x).trim());
+                            const joinParts = (parts) => parts.filter(Boolean).join(', ') || null;
+                            const addrFromNode = (n) => {
+                                if (!n) return null;
+                                if (typeof n === 'string') return n.trim();
+                                // typical schema: { "@type":"Place", "address": { "@type":"PostalAddress", "addressLocality": "...", "addressRegion":"...", "addressCountry":"..." } }
+                                const addr = n.address || n;
+                                if (typeof addr === 'string') return addr.trim();
+                                return joinParts([
+                                    toStr(addr.addressLocality),
+                                    toStr(addr.addressRegion),
+                                    toStr(addr.addressCountry),
+                                ]);
+                            };
+                            if (Array.isArray(jl)) {
+                                for (const j of jl) {
+                                    const s = addrFromNode(j);
+                                    if (s) { location_extracted = s; break; }
+                                }
+                            } else {
+                                const s = addrFromNode(jl);
+                                if (s) location_extracted = s;
+                            }
+                        }
+                    }
+                    if (description_html && date_posted_extracted && location_extracted) break;
+                }
+            } catch (e) {
+                log.debug(`JSON-LD parse failed: ${e.message}`);
+            }
+
+            // 2) DOM selectors fallbacks for description
+            if (!description_html) {
+                const node = $('[data-ui="job-description"], [data-ui="job-content"], .job-description, .JobDetails__content').first();
+                const html = node.html();
+                if (html && html.trim()) description_html = html.trim();
+            }
+            if (!description_text && description_html) {
+                try {
+                    const $$ = load(description_html);
+                    description_text = $$.text().trim() || null;
+                } catch (_) {
+                    description_text = $('[data-ui="job-description"], [data-ui="job-content"], .job-description, .JobDetails__content').text().trim() || null;
+                }
+            }
+            if (!description_text) {
+                const txt = $('[data-ui="job-description"], [data-ui="job-content"], .job-description, .JobDetails__content').text().trim();
+                if (txt) description_text = txt;
+            }
+
+            // 3) DOM fallback for location
+            if (!location_extracted) {
+                const locNode = $('[data-ui="job-location"], .job-stats, .JobDetails__meta').first();
+                const locText = locNode.text().replace(/\s+/g,' ').trim();
+                if (locText) location_extracted = locText;
+            }
+
+            // 4) Relative posted text fallback (e.g., "Posted 3 days ago")
+            if (!date_posted_extracted) {
+                const postBits = $('*').filter((_, el) => /posted\s/i.test($(el).text())).first().text();
+                const m = postBits && postBits.match(/posted\s+(.*?)(ago)?/i);
+                if (m) date_posted_extracted = m[1].trim();
+            }
+// replaced above with robust extraction
             const description_html = descriptionNode.html()?.trim() || null;
             const description_text = descriptionNode.text()?.trim() || null;
 
@@ -176,8 +270,8 @@ const crawler = new CheerioCrawler({
 const result = {
                 title: safeTitle,
                 company: safeCompany,
-                location: safeLocation,
-                date_posted: safeDate,
+                location: (location_extracted ?? safeLocation) || null,
+                date_posted: date_posted_extracted ?? safeDate,
                 description_html,
                 description_text,
                 job_types,
