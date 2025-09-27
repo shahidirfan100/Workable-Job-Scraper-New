@@ -48,6 +48,8 @@ const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration);
 const crawler = new CheerioCrawler({
     proxyConfiguration: proxyConfig,
     maxConcurrency,
+    keepUrlFragment: true,
+    useRequestQueue: true,
     requestHandlerTimeoutSecs: 60,
     navigationTimeoutSecs: 60,
 
