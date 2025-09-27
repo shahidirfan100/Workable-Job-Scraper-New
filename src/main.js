@@ -48,8 +48,6 @@ const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration);
 const crawler = new CheerioCrawler({
     proxyConfiguration: proxyConfig,
     maxConcurrency,
-    keepUrlFragment: true,
-    useRequestQueue: true,
     requestHandlerTimeoutSecs: 60,
     navigationTimeoutSecs: 60,
 
@@ -111,13 +109,61 @@ const crawler = new CheerioCrawler({
             const description_html = descriptionNode.html()?.trim() || null;
             const description_text = descriptionNode.text()?.trim() || null;
 
-            const result = {
+            
+            // Try to extract job types / employment type
+            let job_types = null;
+            try {
+                // Prefer structured data if available
+                const ldNodes = $('script[type="application/ld+json"]');
+                for (let i = 0; i < ldNodes.length; i++) {
+                    try {
+                        const jsonText = $(ldNodes[i]).contents().text().trim();
+                        if (!jsonText) continue;
+                        const data = JSON.parse(jsonText);
+                        const nodes = Array.isArray(data) ? data : [data];
+                        for (const node of nodes) {
+                            if (!node) continue;
+                            // Look for a JobPosting object
+                            if ((node['@type'] && (node['@type'] === 'JobPosting' || (Array.isArray(node['@type']) && node['@type'].includes('JobPosting'))))) {
+                                const et = node.employmentType;
+                                if (et) {
+                                    if (Array.isArray(et)) {
+                                        job_types = et.map(x => String(x).trim()).filter(Boolean);
+                                    } else {
+                                        job_types = [String(et).trim()].filter(Boolean);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        if (job_types) break;
+                    } catch (e) { /* ignore parse errors */ }
+                }
+
+                // Fallback: look for common labels on the page
+                if (!job_types) {
+                    const candidates = [];
+                    // Workable often shows job tags near the header/meta
+                    $('[data-ui="job-meta"], [data-ui="job-tags"], .JobDetails__tags, .job-stats, .job-badges').find('li,span,a').each((_, el) => {
+                        const t = $(el).text().trim();
+                        if (/full[-\s]?time|part[-\s]?time|contract|temporary|internship|freelance|remote/i.test(t)) {
+                            candidates.push(t);
+                        }
+                    });
+                    // Deduplicate
+                    job_types = [...new Set(candidates)].length ? [...new Set(candidates)] : null;
+                }
+            } catch (e) {
+                log.debug(`job_types extraction failed: ${e.message}`);
+            }
+const result = {
                 title: userData.title,
                 company: userData.company,
                 location: userData.location,
                 date_posted: userData.date_posted,
                 description_html,
                 description_text,
+                job_types,
                 url: request.url,
             };
 
