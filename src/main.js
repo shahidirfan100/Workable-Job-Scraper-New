@@ -52,7 +52,8 @@ const crawler = new CheerioCrawler({
     navigationTimeoutSecs: 60,
 
     async requestHandler({ request, json, $, enqueueLinks, addRequests }) {
-        const { label, userData } = request.userData;
+        const userData = request.userData || {};
+        const { label } = userData;
 
         if (label === 'LIST') {
             // This is a page from the Workable jobs API
@@ -104,6 +105,22 @@ const crawler = new CheerioCrawler({
         } else if (label === 'DETAIL') {
             // This is a job detail page
             log.info(`Scraping job detail: ${request.url}`);
+            // Fallbacks in case userData is missing or partial (e.g., retries without metadata)
+            const titleFallback = $('[data-ui="job-title"]').first().text().trim() || $('h1').first().text().trim() || null;
+            const companyFallback = $('[data-ui="company-name"]').first().text().trim()
+                || $('[itemprop="hiringOrganization"]').text().trim()
+                || $('[rel="author"]').first().text().trim()
+                || null;
+            const locationFallback = $('[data-ui="job-location"]').first().text().trim()
+                || $('[itemprop="jobLocation"]').text().trim()
+                || $('.job-stats, .JobDetails__meta').find('li:contains("Location")').next().text().trim()
+                || null;
+
+            const safeTitle = userData.title ?? titleFallback;
+            const safeCompany = userData.company ?? companyFallback;
+            const safeLocation = userData.location ?? locationFallback;
+            const safeDate = userData.date_posted ?? null;
+
 
             const descriptionNode = $('[data-ui="job-description"]');
             const description_html = descriptionNode.html()?.trim() || null;
@@ -157,10 +174,10 @@ const crawler = new CheerioCrawler({
                 log.debug(`job_types extraction failed: ${e.message}`);
             }
 const result = {
-                title: userData.title,
-                company: userData.company,
-                location: userData.location,
-                date_posted: userData.date_posted,
+                title: safeTitle,
+                company: safeCompany,
+                location: safeLocation,
+                date_posted: safeDate,
                 description_html,
                 description_text,
                 job_types,
