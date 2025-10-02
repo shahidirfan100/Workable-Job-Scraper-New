@@ -14,31 +14,25 @@ await Actor.init();
 
 const input = (await Actor.getInput()) || {};
 const {
-  // Existing query-style inputs
+  startUrls = [],
   keyword = '',
   location = '',
-  postedWithin = '7d',     // '24h' | '7d' | '30d' | (anything falsy = no date filter)
-
-  // NEW: allow user to paste a URL
-  listUrl = '',            // e.g. "https://jobs.workable.com/search?...", "https://jobs.workable.com/api/v1/jobs?...", or a detail "https://jobs.workable.com/view/..."
-
-  results_wanted = 200,    // precise target of SAVED items
-  maxConcurrency = 5,
+  posted_date = 'anytime',
+  results_wanted = 100,
+  maxPagesPerList = 25,
+  maxConcurrency = 10,
   proxyConfiguration = null,
-
-  // Auto broaden date window if not enough results
-  expandDateWhenInsufficient = true,
+  cookies = [],
 } = input;
 
-// ---------- Utilities ----------
-function buildCreatedAtPasses(postedWithin) {
-  const start = dateMap[postedWithin] || null;
-  if (!expandDateWhenInsufficient) return [start];
+const targetResults = Math.max(Math.floor(Number(results_wanted)) || 0, 1);
+const maxPagesLimit = Math.max(Math.floor(Number(maxPagesPerList)) || 0, 1);
+const concurrency = Math.max(Math.floor(Number(maxConcurrency)) || 0, 1);
 
-  if (start === 'past_day') return ['past_day', 'past_week', 'past_month', null];
-  if (start === 'past_week') return ['past_week', 'past_month', null];
-  if (start === 'past_month') return ['past_month', null];
-  return [null]; // no initial filter
+// ---------- Utilities ----------
+function buildCreatedAtPasses(selectedRange) {
+  const mapped = dateMap[selectedRange];
+  return mapped ? [mapped] : [null];
 }
 
 function isJobsHost(u) {
@@ -100,8 +94,22 @@ function normalizeListUrl(userUrl, limit, createdAt = null) {
   return null;
 }
 
+function createCookieHeader(cookieInput) {
+  if (!Array.isArray(cookieInput)) return '';
+  const pairs = [];
+  for (const cookie of cookieInput) {
+    if (!cookie || typeof cookie !== 'object') continue;
+    const { name, value } = cookie;
+    if (typeof name !== 'string' || typeof value !== 'string') continue;
+    const trimmedName = name.trim();
+    if (!trimmedName) continue;
+    pairs.push(`${trimmedName}=${value}`);
+  }
+  return pairs.join('; ');
+}
+
 // ---------- Date passes ----------
-const createdAtPasses = buildCreatedAtPasses(postedWithin);
+const createdAtPasses = buildCreatedAtPasses(posted_date);
 
 // ---------- State ----------
 const state = {
@@ -288,20 +296,20 @@ function extractDetailFields($, url, seed) {
 
 // ---------- Build seeds ----------
 
-// If the user provided a direct URL, we prioritize it.
+// If the user provided start URLs, normalize them.
 //  - API list URL => use it
 //  - jobs.workable.com search URL => convert to API list URL
 //  - job detail URL => scrape it directly
-function buildSeedsFromListUrl(userUrl) {
+function buildSeedsFromStartUrl(userUrl, seedId) {
   const seeds = { listSeeds: [], detailSeeds: [] };
   if (!userUrl) return seeds;
 
-  const limit = Math.min(results_wanted || 100, 100);
+  const limit = Math.min(targetResults, 100);
 
   if (isDetailUrl(userUrl)) {
     seeds.detailSeeds.push({
       url: userUrl,
-      userData: { label: 'DETAIL', url: userUrl },
+      userData: { label: 'DETAIL', url: userUrl, seedId },
     });
     return seeds;
   }
@@ -311,19 +319,18 @@ function buildSeedsFromListUrl(userUrl) {
   if (api) {
     seeds.listSeeds.push({
       url: api,
-      userData: { label: 'LIST' },
+      userData: { label: 'LIST', seedId, page: 1 },
       options: { responseType: 'json' },
     });
   }
   return seeds;
 }
 
-// If no listUrl or not usable, fall back to keyword/location with progressive date passes
 function buildSeedsFromQueryInputs() {
   const seeds = [];
-  const limit = Math.min(results_wanted || 100, 100);
+  const limit = Math.min(targetResults, 100);
 
-  for (const pass of createdAtPasses) {
+  createdAtPasses.forEach((pass, index) => {
     const params = new URLSearchParams();
     if (keyword) params.set('q', keyword);
     if (location) params.set('location', location);
@@ -332,31 +339,66 @@ function buildSeedsFromQueryInputs() {
 
     seeds.push({
       url: `https://jobs.workable.com/api/v1/jobs?${params.toString()}`,
-      userData: { label: 'LIST' },
+      userData: { label: 'LIST', seedId: `query-${index + 1}`, page: 1 },
       options: { responseType: 'json' },
     });
-  }
+  });
+
   return seeds;
 }
 
-const directSeeds = buildSeedsFromListUrl(listUrl);
-const listSeeds = directSeeds.listSeeds.length
-  ? directSeeds.listSeeds
-  : buildSeedsFromQueryInputs();
-const detailSeeds = directSeeds.detailSeeds || [];
+const sanitizedStartUrls = Array.isArray(startUrls)
+  ? startUrls.map((u) => (typeof u === 'string' ? u.trim() : '')).filter(Boolean)
+  : [];
+
+const aggregatedListSeeds = [];
+const aggregatedDetailSeeds = [];
+
+sanitizedStartUrls.forEach((url, index) => {
+  const seedId = `start-${index + 1}`;
+  const seeds = buildSeedsFromStartUrl(url, seedId);
+  aggregatedListSeeds.push(...seeds.listSeeds);
+  aggregatedDetailSeeds.push(...seeds.detailSeeds);
+});
+
+const shouldAddQuerySeeds = Boolean(keyword || location || aggregatedListSeeds.length === 0);
+const listSeeds = [
+  ...aggregatedListSeeds,
+  ...(shouldAddQuerySeeds ? buildSeedsFromQueryInputs() : []),
+];
+const detailSeeds = aggregatedDetailSeeds;
+
+for (const seed of detailSeeds) {
+  if (!state.seen.has(seed.url)) state.seen.add(seed.url);
+}
 
 // ---------- Crawler ----------
+const cookieHeader = createCookieHeader(cookies);
+
 const crawler = new CheerioCrawler({
-  proxyConfiguration: await Actor.createProxyConfiguration(proxyConfiguration),
-  maxConcurrency,
+  proxyConfiguration: proxyConfig,
+  maxConcurrency: concurrency,
   requestHandlerTimeoutSecs: 60,
   navigationTimeoutSecs: 60,
+  preNavigationHooks: [
+    async ({ request }) => {
+      if (cookieHeader) {
+        request.headers = request.headers || {};
+        request.headers.Cookie = cookieHeader;
+      }
+    },
+  ],
 
   async requestHandler({ request, json, $, addRequests }) {
     const userData = request.userData || {};
-    const { label } = userData;
+    const { label, seedId, page = 1 } = userData;
 
     if (label === 'LIST') {
+      if (page > maxPagesLimit) {
+        log.debug(`Skipping ${request.url} because it exceeds maxPagesLimit (${maxPagesLimit}).`);
+        return;
+      }
+
       if (!json || !Array.isArray(json.jobs)) {
         log.warning(`Invalid list payload for ${request.url}`);
         return;
@@ -365,7 +407,7 @@ const crawler = new CheerioCrawler({
       const { jobs, paging } = json;
 
       for (const job of jobs) {
-        if (state.collectedCount >= results_wanted) break;
+        if (state.collectedCount >= targetResults) break;
 
         const detailUrl = job.url;
         if (!detailUrl || state.seen.has(detailUrl)) continue;
@@ -378,6 +420,8 @@ const crawler = new CheerioCrawler({
           location: job.location?.location_str || null,
           date_posted: job.published_on || null,
           url: detailUrl,
+          seedId: seedId || null,
+          sourceListUrl: request.url,
         };
 
         await addRequests([{
@@ -386,10 +430,10 @@ const crawler = new CheerioCrawler({
         }]);
       }
 
-      if (paging?.next && state.collectedCount < results_wanted) {
+      if (paging?.next && state.collectedCount < targetResults && page < maxPagesLimit) {
         await addRequests([{
           url: paging.next,
-          userData: { label: 'LIST' },
+          userData: { label: 'LIST', seedId, page: page + 1 },
           options: { responseType: 'json' },
         }]);
       }
@@ -397,7 +441,7 @@ const crawler = new CheerioCrawler({
       const result = extractDetailFields($, request.url, userData);
       await Dataset.pushData(result);
       state.collectedCount++;
-      log.debug(`Saved (${state.collectedCount}/${results_wanted}): ${result.title} @ ${result.company}`);
+      log.debug(`Saved (${state.collectedCount}/${targetResults}): ${result.title} @ ${result.company}`);
     }
   },
 
@@ -405,11 +449,10 @@ const crawler = new CheerioCrawler({
     log.warning(`Request failed and reached max retries: ${request.url}`);
   },
 });
-
 // Seed requests
 await crawler.addRequests([...listSeeds, ...detailSeeds]);
 
 await crawler.run();
 
-log.info(`Scraper finished. Saved ${state.collectedCount} items (target was ${results_wanted}).`);
+log.info(`Scraper finished. Saved ${state.collectedCount} items (target was ${targetResults}).`);
 await Actor.exit();
