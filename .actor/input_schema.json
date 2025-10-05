@@ -1,0 +1,79 @@
+{
+  "title": "Workable Jobs Scraper",
+  "description": "Scrapes public job listings from jobs.workable.com. You can provide search keywords, Workable start URLs, or both, and optionally include cookies for authenticated access.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrls": {
+      "title": "Start URLs",
+      "type": "array",
+      "description": "List of Workable search, list API, or job detail URLs to start from. The scraper will enqueue additional pages from these seeds.",
+      "prefill": [
+        "https://jobs.workable.com/search?location=remote",
+        "https://jobs.workable.com/api/v1/jobs?q=developer&limit=50"
+      ],
+      "editor": "stringList"
+    },    "keyword": {
+      "title": "Keyword(s)",
+      "type": "string",
+      "description": "Optional search keyword. Ignored if a start URL already specifies a query.",
+      "editor": "textfield"    },
+    "location": {
+      "title": "Location",
+      "type": "string",
+      "description": "Optional Workable location slug (e.g., 'remote', 'london', 'greece').",
+      "editor": "textfield"
+    },
+    "posted_date": {
+      "title": "Date Posted",
+      "type": "string",
+      "description": "Filter jobs by posting date when building API queries.",
+      "editor": "select",
+      "default": "anytime",
+      "enum": [
+        "anytime",
+        "24h",
+        "7d",
+        "30d"
+      ],
+      "enumTitles": [
+        "Any Time",
+        "Last 24 Hours",
+        "Last 7 Days",
+        "Last 30 Days"
+      ]
+    },
+    "results_wanted": {
+      "title": "Maximum Jobs",
+      "type": "integer",
+      "description": "Maximum number of job detail records to collect before stopping.",
+      "minimum": 1,
+      "editor": "number",
+      "default": 100    },
+    "maxPagesPerList": {
+      "title": "Maximum Pages per List",
+      "type": "integer",
+      "description": "Limit how many paginated list responses to fetch for each start URL or query.",
+      "minimum": 1,
+      "editor": "number",
+      "default": 25    },
+    "maxConcurrency": {
+      "title": "Max Concurrency",
+      "type": "integer",
+      "description": "Maximum number of concurrent HTTP requests executed by the crawler.",
+      "minimum": 1,
+      "default": 10    },
+    "proxyConfiguration": {
+      "title": "Proxy Configuration",
+      "type": "object",
+      "description": "Configure proxy settings. Using Apify Proxy is recommended to avoid rate limits.",
+      "editor": "proxy"    },
+    "cookies": {
+      "title": "Cookies",
+      "type": "array",
+      "description": "Optional list of cookies to send with every request. Each cookie should be an object with 'name' and 'value'. Example: [{\"name\": \"sessionid\", \"value\": \"abc123\"}].",
+      "editor": "json"
+    }
+  },
+  "required": [],
+  "additionalProperties": false}
