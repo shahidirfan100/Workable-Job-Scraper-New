@@ -117,7 +117,10 @@ const state = {
   seen: new Set(),     // URL-level dedupe across pages & passes
 };
 
-const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration);
+// Handle proxy configuration - ensure it's not null to avoid destructuring error
+const proxyConfig = proxyConfiguration 
+  ? await Actor.createProxyConfiguration(proxyConfiguration)
+  : await Actor.createProxyConfiguration();
 
 // ---------- Detail extractors ----------
 function extractJobTypes($) {
