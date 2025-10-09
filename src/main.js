@@ -77,8 +77,9 @@ function normalizeListUrl(userUrl, limit, createdAt = null) {
       // respect explicit created_at if provided
       u.searchParams.set('created_at', createdAt);
     }
-    // Remove page param if present; paging is given by 'paging.next'
+    // Remove page param if present; pagination is handled by nextPageToken
     u.searchParams.delete('page');
+    u.searchParams.delete('pageToken'); // Also remove any existing pageToken
     return u.toString();
   }
 
@@ -408,7 +409,9 @@ const crawler = new CheerioCrawler({
         return;
       }
 
-      const { jobs, paging } = json;
+      const { jobs, nextPageToken } = json;
+      
+      log.info(`Processing page ${page} with ${jobs.length} jobs. Queued so far: ${state.queuedCount}/${targetResults}`);
 
       for (const job of jobs) {
         if (state.queuedCount >= targetResults) break;
@@ -421,8 +424,8 @@ const crawler = new CheerioCrawler({
           label: 'DETAIL',
           title: job.title || null,
           company: job.company?.title || null,
-          location: job.location?.location_str || null,
-          date_posted: job.published_on || null,
+          location: job.location?.location_str || job.location?.city || null,
+          date_posted: job.created || job.published_on || null,
           url: detailUrl,
           seedId: seedId || null,
           sourceListUrl: request.url,
@@ -436,12 +439,25 @@ const crawler = new CheerioCrawler({
         state.queuedCount++;
       }
 
-      if (paging?.next && state.queuedCount < targetResults && page < maxPagesLimit) {
+      // Use nextPageToken for pagination instead of paging.next
+      if (nextPageToken && state.queuedCount < targetResults && page < maxPagesLimit) {
+        // Build next page URL with pageToken parameter
+        const baseUrl = new URL(request.url);
+        baseUrl.searchParams.set('pageToken', nextPageToken);
+        
+        log.info(`Continuing to next page (${page + 1}) using nextPageToken. Target: ${targetResults}, Queued: ${state.queuedCount}`);
+        
         await addRequests([{
-          url: paging.next,
+          url: baseUrl.toString(),
           userData: { label: 'LIST', seedId, page: page + 1 },
           options: { responseType: 'json' },
         }]);
+      } else if (!nextPageToken) {
+        log.info(`No more pages available (no nextPageToken). Queued: ${state.queuedCount} jobs.`);
+      } else if (state.queuedCount >= targetResults) {
+        log.info(`Reached target queue count (${targetResults}). Stopping pagination.`);
+      } else if (page >= maxPagesLimit) {
+        log.info(`Reached max pages limit (${maxPagesLimit}). Stopping pagination.`);
       }
     } else if (label === 'DETAIL') {
       // Only process if we haven't reached our target yet
@@ -466,5 +482,5 @@ await crawler.addRequests([...listSeeds, ...detailSeeds]);
 
 await crawler.run();
 
-log.info(`Scraper finished. Saved ${state.collectedCount} items (target was ${targetResults}).`);
+log.info(`Scraper finished. Saved ${state.collectedCount} items (target was ${targetResults}). Queued ${state.queuedCount} total.`);
 await Actor.exit();
