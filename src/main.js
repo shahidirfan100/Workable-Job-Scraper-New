@@ -15,10 +15,10 @@ await Actor.init();
 const input = (await Actor.getInput()) || {};
 const {
   startUrls = [],
-  keyword = '',
+  keyword = input.query || '', // Support both 'keyword' and 'query'
   location = '',
-  posted_date = 'anytime',
-  results_wanted = 100,
+  posted_date = input.timeRange || 'anytime', // Support both 'posted_date' and 'timeRange'
+  results_wanted = input.maxJobs || 100, // Support both 'results_wanted' and 'maxJobs'
   maxPagesPerList = 25,
   maxConcurrency = 10,
   proxyConfiguration = null,
@@ -114,6 +114,7 @@ const createdAtPasses = buildCreatedAtPasses(posted_date);
 // ---------- State ----------
 const state = {
   collectedCount: 0,   // incremented AFTER save
+  queuedCount: 0,      // incremented when detail URL is queued
   seen: new Set(),     // URL-level dedupe across pages & passes
 };
 
@@ -307,7 +308,7 @@ function buildSeedsFromStartUrl(userUrl, seedId) {
   const seeds = { listSeeds: [], detailSeeds: [] };
   if (!userUrl) return seeds;
 
-  const limit = Math.min(targetResults, 100);
+  const limit = 100; // Workable API max limit per request
 
   if (isDetailUrl(userUrl)) {
     seeds.detailSeeds.push({
@@ -331,7 +332,7 @@ function buildSeedsFromStartUrl(userUrl, seedId) {
 
 function buildSeedsFromQueryInputs() {
   const seeds = [];
-  const limit = Math.min(targetResults, 100);
+  const limit = 100; // Workable API max limit per request
 
   createdAtPasses.forEach((pass, index) => {
     const params = new URLSearchParams();
@@ -410,7 +411,7 @@ const crawler = new CheerioCrawler({
       const { jobs, paging } = json;
 
       for (const job of jobs) {
-        if (state.collectedCount >= targetResults) break;
+        if (state.queuedCount >= targetResults) break;
 
         const detailUrl = job.url;
         if (!detailUrl || state.seen.has(detailUrl)) continue;
@@ -431,9 +432,11 @@ const crawler = new CheerioCrawler({
           url: detailUrl,
           userData: detailUserData,
         }]);
+        
+        state.queuedCount++;
       }
 
-      if (paging?.next && state.collectedCount < targetResults && page < maxPagesLimit) {
+      if (paging?.next && state.queuedCount < targetResults && page < maxPagesLimit) {
         await addRequests([{
           url: paging.next,
           userData: { label: 'LIST', seedId, page: page + 1 },
@@ -441,6 +444,12 @@ const crawler = new CheerioCrawler({
         }]);
       }
     } else if (label === 'DETAIL') {
+      // Only process if we haven't reached our target yet
+      if (state.collectedCount >= targetResults) {
+        log.debug(`Skipping job detail - already reached target of ${targetResults} jobs`);
+        return;
+      }
+      
       const result = extractDetailFields($, request.url, userData);
       await Dataset.pushData(result);
       state.collectedCount++;
