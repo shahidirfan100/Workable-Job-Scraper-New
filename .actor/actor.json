@@ -6,6 +6,7 @@
   "dockerfile": "./Dockerfile",
   "readme": "../README.md",
   "input": "./input_schema.json",
+  "output": "./output_schema.json",
   "nodeJsVersion": "22",
   "storages": {
     "dataset": "./dataset_schema.json"
