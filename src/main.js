@@ -1,16 +1,7 @@
 // src/main.js
-import { Actor } from 'apify';
-import { gotScraping } from 'got-scraping';
+import { Actor, log } from 'apify';
+import { CheerioCrawler } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
-
-// User-Agent rotation pool
-const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-];
 
 // Maps input time ranges to Workable API parameters
 const dateMap = {
@@ -18,12 +9,6 @@ const dateMap = {
   '7d': 'past_week',
   '30d': 'past_month',
 };
-
-// Random delay helper
-const randomDelay = () => new Promise(resolve => setTimeout(resolve, 50 + Math.random() * 150));
-
-// Get random User-Agent
-const getRandomUA = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 
 await Actor.init();
 
@@ -107,39 +92,6 @@ const state = {
   seen: new Set(),
 };
 
-// ---------- HTTP Request Helper ----------
-async function makeRequest(url, isJson = false) {
-  const proxyUrl = proxyConfig ? await proxyConfig.newUrl() : undefined;
-
-  try {
-    const response = await gotScraping({
-      url,
-      proxyUrl,
-      headers: {
-        'User-Agent': getRandomUA(),
-        'Accept': isJson ? 'application/json' : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-      },
-      responseType: isJson ? 'json' : 'text',
-      http2: true,
-      retry: {
-        limit: 3,
-        methods: ['GET'],
-        statusCodes: [408, 413, 429, 500, 502, 503, 504, 521, 522, 524],
-      },
-    });
-
-    await randomDelay();
-    return response;
-  } catch (error) {
-    console.log(`Request failed for ${url}: ${error.message}`);
-    throw error;
-  }
-}
-
 // ---------- Extraction Functions ----------
 function extractJobTypes($) {
   let job_types = null;
@@ -181,7 +133,7 @@ function extractJobTypes($) {
       job_types = uniq.length ? uniq : null;
     }
   } catch (e) {
-    console.log(`job_types extraction failed: ${e.message}`);
+    log.debug(`job_types extraction failed: ${e.message}`);
   }
 
   return job_types;
@@ -304,7 +256,7 @@ function extractDetailFields($, url, seed) {
       }
     }
   } catch (e) {
-    console.log(`JSON-LD parse failed: ${e.message}`);
+    log.debug(`JSON-LD parse failed: ${e.message}`);
   }
 
   // DOM fallbacks for description
@@ -394,6 +346,7 @@ function buildSeedsFromStartUrl(userUrl, seedId) {
     seeds.listSeeds.push({
       url: api,
       userData: { label: 'LIST', seedId, page: 1 },
+      options: { responseType: 'json' },
     });
   }
   return seeds;
@@ -413,6 +366,7 @@ function buildSeedsFromQueryInputs() {
     seeds.push({
       url: `https://jobs.workable.com/api/v1/jobs?${params.toString()}`,
       userData: { label: 'LIST', seedId: `query-${index + 1}`, page: 1 },
+      options: { responseType: 'json' },
     });
   });
 
@@ -444,128 +398,121 @@ for (const seed of detailSeeds) {
   if (!state.seen.has(seed.url)) state.seen.add(seed.url);
 }
 
-// ---------- Request Processing ----------
-const listQueue = [...listSeeds];
-const detailQueue = [...detailSeeds];
+// ---------- Crawler ----------
+const crawler = new CheerioCrawler({
+  proxyConfiguration: proxyConfig,
+  maxConcurrency: concurrency,
+  requestHandlerTimeoutSecs: 60,
+  navigationTimeoutSecs: 60,
 
-async function processListPage(request) {
-  const { label, seedId, page = 1 } = request.userData || {};
+  async requestHandler({ request, json, $, crawler }) {
+    const userData = request.userData || {};
+    const { label, seedId, page = 1 } = userData;
 
-  if (page > maxPagesLimit) {
-    console.log(`Skipping ${request.url} - exceeds maxPagesLimit (${maxPagesLimit})`);
-    return;
-  }
+    if (label === 'LIST') {
+      if (page > maxPagesLimit) {
+        log.debug(`Skipping ${request.url} because it exceeds maxPagesLimit (${maxPagesLimit}).`);
+        return;
+      }
 
-  try {
-    const response = await makeRequest(request.url, true);
-    const json = response.body;
+      if (!json || !Array.isArray(json.jobs)) {
+        log.warning(`Invalid list payload for ${request.url}`);
+        return;
+      }
 
-    if (!json || !Array.isArray(json.jobs)) {
-      console.log(`Invalid list payload for ${request.url}`);
-      return;
+      const { jobs, nextPageToken } = json;
+
+      log.info(`Processing page ${page} with ${jobs.length} jobs. Queued so far: ${state.queuedCount}/${targetResults}`);
+
+      for (const job of jobs) {
+        if (state.queuedCount >= targetResults) break;
+
+        const detailUrl = job.url;
+        if (!detailUrl || state.seen.has(detailUrl)) continue;
+        state.seen.add(detailUrl);
+
+        const detailUserData = {
+          label: 'DETAIL',
+          id: job.id || null,
+          shortcode: job.shortcode || null,
+          title: job.title || null,
+          company: job.company?.title || null,
+          company_description: job.company?.description || null,
+          company_logo: job.company?.logo || null,
+          location: job.location?.location_str || job.location?.city || null,
+          country: job.location?.country || null,
+          region: job.location?.region || null,
+          remote: job.remote || null,
+          telecommuting: job.location?.telecommuting || null,
+          department: job.department || null,
+          employment_type: job.employment_type || null,
+          function: job.function || null,
+          experience: job.experience || null,
+          education: job.education || null,
+          date_posted: job.created || job.published_on || null,
+          created: job.created || null,
+          published_on: job.published_on || null,
+          url: detailUrl,
+          seedId: seedId || null,
+          sourceListUrl: request.url,
+        };
+
+        await crawler.addRequests([{
+          url: detailUrl,
+          userData: detailUserData,
+        }]);
+
+        state.queuedCount++;
+      }
+
+      // Use nextPageToken for pagination
+      if (nextPageToken && state.queuedCount < targetResults && page < maxPagesLimit) {
+        const baseUrl = new URL(request.url);
+        baseUrl.searchParams.set('pageToken', nextPageToken);
+
+        log.info(`Continuing to next page (${page + 1}) using nextPageToken. Target: ${targetResults}, Queued: ${state.queuedCount}`);
+
+        await crawler.addRequests([{
+          url: baseUrl.toString(),
+          userData: { label: 'LIST', seedId, page: page + 1 },
+          options: { responseType: 'json' },
+        }]);
+      } else if (!nextPageToken) {
+        log.info(`No more pages available (no nextPageToken). Queued: ${state.queuedCount} jobs.`);
+      } else if (state.queuedCount >= targetResults) {
+        log.info(`Reached target queue count (${targetResults}). Stopping pagination.`);
+      } else if (page >= maxPagesLimit) {
+        log.info(`Reached max pages limit (${maxPagesLimit}). Stopping pagination.`);
+      }
+    } else if (label === 'DETAIL') {
+      // Only process if we haven't reached our target yet
+      if (state.collectedCount >= targetResults) {
+        log.debug(`Skipping job detail - already reached target of ${targetResults} jobs`);
+        return;
+      }
+
+      const result = extractDetailFields($, request.url, userData);
+      await Actor.pushData(result);
+      state.collectedCount++;
+
+      if (state.collectedCount % 10 === 0 || state.collectedCount === targetResults) {
+        log.info(`Progress: ${state.collectedCount}/${targetResults} jobs saved`);
+      }
     }
+  },
 
-    const { jobs, nextPageToken } = json;
+  async failedRequestHandler({ request }) {
+    log.warning(`Request failed and reached max retries: ${request.url}`);
+  },
+});
 
-    console.log(`Processing page ${page} with ${jobs.length} jobs. Queued: ${state.queuedCount}/${targetResults}`);
+// Seed requests
+await crawler.addRequests([...listSeeds, ...detailSeeds]);
 
-    for (const job of jobs) {
-      if (state.queuedCount >= targetResults) break;
+log.info(`Starting scraper. Target: ${targetResults} jobs, Concurrency: ${concurrency}`);
 
-      const detailUrl = job.url;
-      if (!detailUrl || state.seen.has(detailUrl)) continue;
-      state.seen.add(detailUrl);
+await crawler.run();
 
-      const detailUserData = {
-        label: 'DETAIL',
-        id: job.id || null,
-        shortcode: job.shortcode || null,
-        title: job.title || null,
-        company: job.company?.title || null,
-        company_description: job.company?.description || null,
-        company_logo: job.company?.logo || null,
-        location: job.location?.location_str || job.location?.city || null,
-        country: job.location?.country || null,
-        region: job.location?.region || null,
-        remote: job.remote || null,
-        telecommuting: job.location?.telecommuting || null,
-        department: job.department || null,
-        employment_type: job.employment_type || null,
-        function: job.function || null,
-        experience: job.experience || null,
-        education: job.education || null,
-        date_posted: job.created || job.published_on || null,
-        created: job.created || null,
-        published_on: job.published_on || null,
-        url: detailUrl,
-        seedId: seedId || null,
-        sourceListUrl: request.url,
-      };
-
-      detailQueue.push({
-        url: detailUrl,
-        userData: detailUserData,
-      });
-
-      state.queuedCount++;
-    }
-
-    // Handle pagination
-    if (nextPageToken && state.queuedCount < targetResults && page < maxPagesLimit) {
-      const baseUrl = new URL(request.url);
-      baseUrl.searchParams.set('pageToken', nextPageToken);
-
-      console.log(`Continuing to page ${page + 1} using nextPageToken. Queued: ${state.queuedCount}`);
-
-      listQueue.push({
-        url: baseUrl.toString(),
-        userData: { label: 'LIST', seedId, page: page + 1 },
-      });
-    } else if (!nextPageToken) {
-      console.log(`No more pages available. Queued: ${state.queuedCount} jobs.`);
-    }
-  } catch (error) {
-    console.log(`Failed to process list page ${request.url}: ${error.message}`);
-  }
-}
-
-async function processDetailPage(request) {
-  if (state.collectedCount >= targetResults) {
-    console.log(`Skipping detail - already reached target of ${targetResults} jobs`);
-    return;
-  }
-
-  try {
-    const response = await makeRequest(request.url, false);
-    const $ = cheerioLoad(response.body);
-
-    const result = extractDetailFields($, request.url, request.userData);
-    await Actor.pushData(result);
-    state.collectedCount++;
-
-    if (state.collectedCount % 10 === 0 || state.collectedCount === targetResults) {
-      console.log(`Progress: ${state.collectedCount}/${targetResults} jobs saved`);
-    }
-  } catch (error) {
-    console.log(`Failed to process detail page ${request.url}: ${error.message}`);
-  }
-}
-
-// ---------- Main Execution Loop ----------
-console.log(`Starting scraper. Target: ${targetResults} jobs, Concurrency: ${concurrency}`);
-
-// Process list pages first
-while (listQueue.length > 0 && state.queuedCount < targetResults) {
-  const batch = listQueue.splice(0, concurrency);
-  await Promise.all(batch.map(processListPage));
-}
-
-// Process detail pages
-while (detailQueue.length > 0 && state.collectedCount < targetResults) {
-  const batch = detailQueue.splice(0, concurrency);
-  await Promise.all(batch.map(processDetailPage));
-}
-
-console.log(`Scraper finished. Saved ${state.collectedCount}/${targetResults} jobs. Total queued: ${state.queuedCount}`);
+log.info(`Scraper finished. Saved ${state.collectedCount} items (target was ${targetResults}). Queued ${state.queuedCount} total.`);
 
 await Actor.exit();
