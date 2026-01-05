@@ -7,26 +7,22 @@
       "transformation": {
         "fields": [
           "id",
-          "shortcode",
           "title",
           "company",
-          "company_logo",
-          "location",
-          "country",
-          "workplace_type",
           "department",
-          "employment_type",
+          "location",
           "job_types",
-          "salary",
           "date_posted",
-          "valid_through",
-          "description_text",
           "url"
         ]
       },
       "display": {
         "component": "table",
         "properties": {
+          "id": {
+            "label": "Job ID",
+            "format": "text"
+          },
           "title": {
             "label": "Job Title",
             "format": "text"
@@ -35,24 +31,16 @@
             "label": "Company",
             "format": "text"
           },
-          "location": {
-            "label": "Location",
-            "format": "text"
-          },
-          "workplace_type": {
-            "label": "Remote/On-site",
-            "format": "text"
-          },
           "department": {
             "label": "Department",
             "format": "text"
           },
-          "employment_type": {
-            "label": "Employment Type",
+          "location": {
+            "label": "Location",
             "format": "text"
           },
-          "salary": {
-            "label": "Salary",
+          "job_types": {
+            "label": "Job Type",
             "format": "text"
           },
           "date_posted": {

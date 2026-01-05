@@ -10,25 +10,6 @@ const dateMap = {
   '30d': 'past_month',
 };
 
-// Helper to clean HTML to readable text
-function cleanHtmlToText(html) {
-  if (!html) return null;
-  try {
-    const $ = cheerioLoad(html);
-    // Remove script and style elements
-    $('script, style').remove();
-    // Get text and clean it
-    let text = $.text();
-    // Replace multiple whitespace with single space
-    text = text.replace(/\s+/g, ' ').trim();
-    // Replace multiple newlines with single newline
-    text = text.replace(/\n\s*\n/g, '\n').trim();
-    return text || null;
-  } catch {
-    return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() || null;
-  }
-}
-
 await Actor.init();
 
 const input = (await Actor.getInput()) || {};
@@ -46,11 +27,6 @@ const {
 const targetResults = Math.max(Math.floor(Number(results_wanted)) || 0, 1);
 const maxPagesLimit = Math.max(Math.floor(Number(maxPagesPerList)) || 0, 1);
 const concurrency = Math.max(Math.floor(Number(maxConcurrency)) || 0, 1);
-
-// Proxy configuration
-const proxyConfig = proxyConfiguration
-  ? await Actor.createProxyConfiguration(proxyConfiguration)
-  : await Actor.createProxyConfiguration();
 
 // ---------- Utilities ----------
 function buildCreatedAtPasses(selectedRange) {
@@ -111,12 +87,16 @@ const state = {
   seen: new Set(),
 };
 
-// ---------- Extraction Functions ----------
+// Handle proxy configuration
+const proxyConfig = proxyConfiguration
+  ? await Actor.createProxyConfiguration(proxyConfiguration)
+  : await Actor.createProxyConfiguration();
+
+// ---------- Detail extractors ----------
 function extractJobTypes($) {
   let job_types = null;
 
   try {
-    // First try JSON-LD
     const ldNodes = $('script[type="application/ld+json"]');
     for (let i = 0; i < ldNodes.length; i++) {
       const jsonText = $(ldNodes[i]).contents().text().trim();
@@ -140,37 +120,15 @@ function extractJobTypes($) {
       if (job_types) break;
     }
 
-    // DOM fallback with more selectors
     if (!job_types) {
       const candidates = [];
-      const re = /full[-\s]?time|part[-\s]?time|contract|temporary|intern(ship)?|freelance|remote|on[-\s]?site|hybrid/i;
-
-      // Extended selector list for Workable pages
-      const selectors = [
-        '[data-ui="job-meta"]',
-        '[data-ui="job-tags"]',
-        '[data-ui="job-type"]',
-        '.JobDetails__tags',
-        '.job-stats',
-        '.job-badges',
-        '.job-type',
-        '.employment-type',
-        '[itemprop="employmentType"]',
-        '.job-info li',
-        '.job-details li',
-        '.job-meta span',
-        '.job-header span',
-        '[class*="employment"]',
-        '[class*="job-type"]',
-      ];
-
-      $(selectors.join(', ')).find('li,span,a,div,p').addBack().each((_, el) => {
-        const t = $(el).text().trim();
-        if (t && re.test(t) && t.length < 50) {
-          candidates.push(t);
-        }
-      });
-
+      const re = /full[-\s]?time|part[-\s]?time|contract|temporary|intern(ship)?|freelance|remote/i;
+      $('[data-ui="job-meta"], [data-ui="job-tags"], .JobDetails__tags, .job-stats, .job-badges')
+        .find('li,span,a,div')
+        .each((_, el) => {
+          const t = $(el).text().trim();
+          if (re.test(t)) candidates.push(t);
+        });
       const uniq = [...new Set(candidates)];
       job_types = uniq.length ? uniq : null;
     }
@@ -193,14 +151,10 @@ function extractDetailFields($, url, seed) {
     || $('[rel="author"]').first().text().trim()
     || null;
 
-  // Enhanced location extraction with multiple fallbacks
   const locationFallback =
     $('[data-ui="job-location"]').first().text().trim()
-    || $('[itemprop="jobLocation"]').first().text().trim()
-    || $('[itemprop="addressLocality"]').first().text().trim()
-    || $('.job-location').first().text().trim()
-    || $('[class*="location"]').first().text().trim()
-    || $('meta[property="og:locale"]').attr('content')
+    || $('[itemprop="jobLocation"]').text().trim()
+    || $('.job-stats, .JobDetails__meta').find('li:contains("Location")').next().text().trim()
     || null;
 
   const safeTitle = seed?.title ?? titleFallback;
@@ -212,11 +166,8 @@ function extractDetailFields($, url, seed) {
   let description_text = null;
   let date_posted_extracted = null;
   let location_extracted = safeLocationSeed || null;
-  let employment_type = null;
-  let valid_through = null;
-  let salary = null;
 
-  // JSON-LD JobPosting - extract from detail page schema
+  // JSON-LD JobPosting
   try {
     const ldNodes = $('script[type="application/ld+json"]');
     for (let i = 0; i < ldNodes.length; i++) {
@@ -238,30 +189,6 @@ function extractDetailFields($, url, seed) {
         if (!date_posted_extracted && node.datePosted) {
           date_posted_extracted = String(node.datePosted).trim();
         }
-        if (!valid_through && node.validThrough) {
-          valid_through = String(node.validThrough).trim();
-        }
-        if (!employment_type && node.employmentType) {
-          const et = node.employmentType;
-          employment_type = Array.isArray(et) ? et.join(', ') : String(et).trim();
-        }
-
-        // Salary extraction from JSON-LD
-        if (!salary && node.baseSalary) {
-          const bs = node.baseSalary;
-          if (bs.value) {
-            const val = bs.value;
-            if (val.value) {
-              salary = String(val.value).trim();
-            } else if (val.minValue && val.maxValue) {
-              const currency = val.currency || bs.currency || '';
-              salary = `${currency} ${val.minValue}-${val.maxValue}`.trim();
-            } else if (val.minValue) {
-              salary = `${val.minValue}+`;
-            }
-          }
-        }
-
         if (!location_extracted) {
           const toStr = (x) => (x == null ? '' : String(x).trim());
           const joinParts = (parts) => parts.filter(Boolean).join(', ') || null;
@@ -289,45 +216,35 @@ function extractDetailFields($, url, seed) {
           }
         }
       }
+      if (description_html && date_posted_extracted && location_extracted) break;
     }
   } catch (e) {
     log.debug(`JSON-LD parse failed: ${e.message}`);
   }
 
-  // DOM fallbacks for description
+  // DOM fallbacks
   if (!description_html) {
     const node = $('[data-ui="job-description"], [data-ui="job-content"], .job-description, .JobDetails__content').first();
     const html = node.html();
     if (html && html.trim()) description_html = html.trim();
   }
-
-  // Clean description to readable text
-  if (description_html) {
-    description_text = cleanHtmlToText(description_html);
+  if (!description_text && description_html) {
+    try {
+      const $$ = cheerioLoad(description_html);
+      description_text = $$.text().replace(/\s+\n/g, '\n').replace(/\s{2,}/g, ' ').trim() || null;
+    } catch {
+      description_text = $('[data-ui="job-description"], [data-ui="job-content"], .JobDetails__content, .job-description').text().trim() || null;
+    }
+  }
+  if (!description_text) {
+    const txt = $('[data-ui="job-description"], [data-ui="job-content"], .JobDetails__content, .job-description').text().trim();
+    if (txt) description_text = txt;
   }
 
-  // Enhanced DOM fallback for location with more selectors
   if (!location_extracted) {
-    const locationSelectors = [
-      '[data-ui="job-location"]',
-      '[itemprop="jobLocation"]',
-      '[itemprop="addressLocality"]',
-      '.job-location',
-      '.location',
-      '[class*="location"]',
-      '.job-stats li',
-      '.JobDetails__meta li',
-      '.job-info address',
-      'address',
-    ];
-
-    for (const sel of locationSelectors) {
-      const locText = $(sel).first().text().replace(/\s+/g, ' ').trim();
-      if (locText && locText.length > 2 && locText.length < 200) {
-        location_extracted = locText;
-        break;
-      }
-    }
+    const locNode = $('[data-ui="job-location"], .job-stats, .JobDetails__meta').first();
+    const locText = locNode.text().replace(/\s+/g, ' ').trim();
+    if (locText) location_extracted = locText;
   }
 
   if (!date_posted_extracted) {
@@ -338,35 +255,18 @@ function extractDetailFields($, url, seed) {
 
   const job_types = extractJobTypes($);
 
-  // Build final result with ONLY fields that have data
-  const result = {
+  return {
+    id: seed?.id || null,
     title: safeTitle || null,
     company: safeCompany || null,
+    department: seed?.department || null,
     location: location_extracted || null,
     date_posted: date_posted_extracted ?? safeDateSeed ?? null,
+    description_html: description_html || null,
+    description_text: description_text || null,
+    job_types: job_types || null,
     url,
   };
-
-  // Add optional fields from API seed data
-  if (seed?.id) result.id = seed.id;
-  if (seed?.shortcode) result.shortcode = seed.shortcode;
-  if (seed?.department) result.department = seed.department;
-  if (seed?.workplace_type) result.workplace_type = seed.workplace_type;
-
-  // Add company info if available
-  if (seed?.company_name) result.company = seed.company_name;
-  if (seed?.company_logo) result.company_logo = seed.company_logo;
-
-  // Add location details from API
-  if (seed?.country) result.country = seed.country;
-
-  // Add detail page extracted fields\n  // Use job_types to derive employment_type if not found in JSON-LD\n  const finalEmploymentType = employment_type || (job_types && job_types.length > 0 ? job_types.join(', ') : null);\n  if (finalEmploymentType) result.employment_type = finalEmploymentType;\n  if (job_types && job_types.length > 0) result.job_types = job_types;\n  if (salary) result.salary = salary;\n  if (valid_through) result.valid_through = valid_through;
-
-  // Add descriptions (cleaned text)
-  if (description_html) result.description_html = description_html;
-  if (description_text) result.description_text = description_text;
-
-  return result;
 }
 
 // ---------- Build seeds ----------
@@ -474,28 +374,17 @@ const crawler = new CheerioCrawler({
         if (!detailUrl || state.seen.has(detailUrl)) continue;
         state.seen.add(detailUrl);
 
-        // Map ONLY fields that actually exist in Workable API
         const detailUserData = {
           label: 'DETAIL',
-          // Core fields from API
           id: job.id || null,
-          shortcode: job.shortcode || null,
-          title: job.title || job.full_title || null,
-          // Company info
-          company_name: job.company?.title || job.company?.name || null,
-          company_logo: job.company?.logo || null,
-          // Location info
-          location: job.location?.location_str || null,
-          country: job.location?.country || null,
-          // Workplace type (remote/hybrid/on_site)
-          workplace_type: job.workplace_type || null,
-          // Department
+          title: job.title || null,
+          company: job.company?.title || null,
           department: job.department || null,
-          // Dates
+          location: job.location?.location_str || job.location?.city || null,
           date_posted: job.created || job.published_on || null,
-          // URL reference
           url: detailUrl,
           seedId: seedId || null,
+          sourceListUrl: request.url,
         };
 
         await crawler.addRequests([{
@@ -526,7 +415,6 @@ const crawler = new CheerioCrawler({
         log.info(`Reached max pages limit (${maxPagesLimit}). Stopping pagination.`);
       }
     } else if (label === 'DETAIL') {
-      // Only process if we haven't reached our target yet
       if (state.collectedCount >= targetResults) {
         log.debug(`Skipping job detail - already reached target of ${targetResults} jobs`);
         return;
