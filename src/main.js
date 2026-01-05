@@ -116,6 +116,7 @@ function extractJobTypes($) {
   let job_types = null;
 
   try {
+    // First try JSON-LD
     const ldNodes = $('script[type="application/ld+json"]');
     for (let i = 0; i < ldNodes.length; i++) {
       const jsonText = $(ldNodes[i]).contents().text().trim();
@@ -139,15 +140,37 @@ function extractJobTypes($) {
       if (job_types) break;
     }
 
+    // DOM fallback with more selectors
     if (!job_types) {
       const candidates = [];
-      const re = /full[-\s]?time|part[-\s]?time|contract|temporary|intern(ship)?|freelance|remote/i;
-      $('[data-ui="job-meta"], [data-ui="job-tags"], .JobDetails__tags, .job-stats, .job-badges')
-        .find('li,span,a,div')
-        .each((_, el) => {
-          const t = $(el).text().trim();
-          if (re.test(t)) candidates.push(t);
-        });
+      const re = /full[-\s]?time|part[-\s]?time|contract|temporary|intern(ship)?|freelance|remote|on[-\s]?site|hybrid/i;
+
+      // Extended selector list for Workable pages
+      const selectors = [
+        '[data-ui="job-meta"]',
+        '[data-ui="job-tags"]',
+        '[data-ui="job-type"]',
+        '.JobDetails__tags',
+        '.job-stats',
+        '.job-badges',
+        '.job-type',
+        '.employment-type',
+        '[itemprop="employmentType"]',
+        '.job-info li',
+        '.job-details li',
+        '.job-meta span',
+        '.job-header span',
+        '[class*="employment"]',
+        '[class*="job-type"]',
+      ];
+
+      $(selectors.join(', ')).find('li,span,a,div,p').addBack().each((_, el) => {
+        const t = $(el).text().trim();
+        if (t && re.test(t) && t.length < 50) {
+          candidates.push(t);
+        }
+      });
+
       const uniq = [...new Set(candidates)];
       job_types = uniq.length ? uniq : null;
     }
@@ -170,9 +193,14 @@ function extractDetailFields($, url, seed) {
     || $('[rel="author"]').first().text().trim()
     || null;
 
+  // Enhanced location extraction with multiple fallbacks
   const locationFallback =
     $('[data-ui="job-location"]').first().text().trim()
-    || $('[itemprop="jobLocation"]').text().trim()
+    || $('[itemprop="jobLocation"]').first().text().trim()
+    || $('[itemprop="addressLocality"]').first().text().trim()
+    || $('.job-location').first().text().trim()
+    || $('[class*="location"]').first().text().trim()
+    || $('meta[property="og:locale"]').attr('content')
     || null;
 
   const safeTitle = seed?.title ?? titleFallback;
@@ -278,10 +306,28 @@ function extractDetailFields($, url, seed) {
     description_text = cleanHtmlToText(description_html);
   }
 
+  // Enhanced DOM fallback for location with more selectors
   if (!location_extracted) {
-    const locNode = $('[data-ui="job-location"], .job-stats, .JobDetails__meta').first();
-    const locText = locNode.text().replace(/\s+/g, ' ').trim();
-    if (locText) location_extracted = locText;
+    const locationSelectors = [
+      '[data-ui="job-location"]',
+      '[itemprop="jobLocation"]',
+      '[itemprop="addressLocality"]',
+      '.job-location',
+      '.location',
+      '[class*="location"]',
+      '.job-stats li',
+      '.JobDetails__meta li',
+      '.job-info address',
+      'address',
+    ];
+
+    for (const sel of locationSelectors) {
+      const locText = $(sel).first().text().replace(/\s+/g, ' ').trim();
+      if (locText && locText.length > 2 && locText.length < 200) {
+        location_extracted = locText;
+        break;
+      }
+    }
   }
 
   if (!date_posted_extracted) {
@@ -314,11 +360,7 @@ function extractDetailFields($, url, seed) {
   // Add location details from API
   if (seed?.country) result.country = seed.country;
 
-  // Add detail page extracted fields
-  if (employment_type) result.employment_type = employment_type;
-  if (job_types && job_types.length > 0) result.job_types = job_types;
-  if (salary) result.salary = salary;
-  if (valid_through) result.valid_through = valid_through;
+  // Add detail page extracted fields\n  // Use job_types to derive employment_type if not found in JSON-LD\n  const finalEmploymentType = employment_type || (job_types && job_types.length > 0 ? job_types.join(', ') : null);\n  if (finalEmploymentType) result.employment_type = finalEmploymentType;\n  if (job_types && job_types.length > 0) result.job_types = job_types;\n  if (salary) result.salary = salary;\n  if (valid_through) result.valid_through = valid_through;
 
   // Add descriptions (cleaned text)
   if (description_html) result.description_html = description_html;
