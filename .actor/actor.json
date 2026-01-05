@@ -3,7 +3,7 @@
   "name": "workable-jobs-scraper",
   "version": "2.1.1",
   "buildTag": "latest",
-  "dockerfile": "./Dockerfile",
+  "dockerfile": "../Dockerfile",
   "readme": "../README.md",
   "input": "./input_schema.json",
   "output": "./output_schema.json",

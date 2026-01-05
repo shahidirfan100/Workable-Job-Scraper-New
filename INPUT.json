@@ -2,7 +2,7 @@
   "query": "",
   "location": "Western Europe",
   "timeRange": "24h",
-  "maxJobs": 150,
+  "maxJobs": 50,
   "collectOnly": false,
   "maxConcurrency": 5,
   "proxyConfiguration": null

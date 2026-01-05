@@ -6,12 +6,34 @@
       "title": "Overview",
       "transformation": {
         "fields": [
+          "id",
+          "shortcode",
           "title",
           "company",
+          "company_description",
+          "company_logo",
           "location",
-          "salary",
-          "job_type",
+          "country",
+          "region",
+          "remote",
+          "telecommuting",
+          "department",
+          "employment_type",
+          "function",
+          "experience",
+          "education",
           "date_posted",
+          "created",
+          "published_on",
+          "valid_through",
+          "salary",
+          "salary_currency",
+          "benefits",
+          "qualifications",
+          "responsibilities",
+          "job_types",
+          "description_html",
+          "description_text",
           "url"
         ]
       },
@@ -30,12 +52,20 @@
             "label": "Location",
             "format": "text"
           },
-          "salary": {
-            "label": "Salary",
+          "employment_type": {
+            "label": "Employment Type",
             "format": "text"
           },
-          "job_type": {
-            "label": "Job Type",
+          "remote": {
+            "label": "Remote",
+            "format": "text"
+          },
+          "department": {
+            "label": "Department",
+            "format": "text"
+          },
+          "salary": {
+            "label": "Salary",
             "format": "text"
           },
           "date_posted": {

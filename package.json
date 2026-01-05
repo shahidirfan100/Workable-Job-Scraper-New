@@ -1,15 +1,14 @@
 {
   "name": "workable-jobs-scraper",
   "version": "2.1.1",
-  "description": "Scrapes job listings from jobs.workable.com using HTTP requests and Cheerio.",
+  "description": "Scrapes job listings from jobs.workable.com using got-scraping and Cheerio for fast, stealthy data extraction.",
   "type": "module",
   "scripts": {
     "start": "node src/main.js"
   },
   "dependencies": {
-    "apify": "^3.4.5",
-    "crawlee": "^3.14.1",
+    "apify": "^3.5.2",
     "cheerio": "^1.0.0-rc.12",
-    "got-scraping": "^4.0.3"
+    "got-scraping": "^4.1.2"
   }
 }

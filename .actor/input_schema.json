@@ -13,11 +13,13 @@
         "https://jobs.workable.com/api/v1/jobs?q=developer&limit=50"
       ],
       "editor": "stringList"
-    },    "keyword": {
+    },
+    "keyword": {
       "title": "Keyword(s)",
       "type": "string",
       "description": "Optional search keyword. Ignored if a start URL already specifies a query.",
-      "editor": "textfield"    },
+      "editor": "textfield"
+    },
     "location": {
       "title": "Location",
       "type": "string",
@@ -49,31 +51,30 @@
       "description": "Maximum number of job detail records to collect before stopping.",
       "minimum": 1,
       "editor": "number",
-      "default": 100    },
+      "default": 50
+    },
     "maxPagesPerList": {
       "title": "Maximum Pages per List",
       "type": "integer",
       "description": "Limit how many paginated list responses to fetch for each start URL or query.",
       "minimum": 1,
       "editor": "number",
-      "default": 25    },
+      "default": 25
+    },
     "maxConcurrency": {
       "title": "Max Concurrency",
       "type": "integer",
       "description": "Maximum number of concurrent HTTP requests executed by the crawler.",
       "minimum": 1,
-      "default": 10    },
+      "default": 10
+    },
     "proxyConfiguration": {
       "title": "Proxy Configuration",
       "type": "object",
       "description": "Configure proxy settings. Using Apify Proxy is recommended to avoid rate limits.",
-      "editor": "proxy"    },
-    "cookies": {
-      "title": "Cookies",
-      "type": "array",
-      "description": "Optional list of cookies to send with every request. Each cookie should be an object with 'name' and 'value'. Example: [{\"name\": \"sessionid\", \"value\": \"abc123\"}].",
-      "editor": "json"
+      "editor": "proxy"
     }
   },
   "required": [],
-  "additionalProperties": false}
+  "additionalProperties": false
+}
