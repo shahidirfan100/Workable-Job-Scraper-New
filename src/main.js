@@ -10,6 +10,25 @@ const dateMap = {
   '30d': 'past_month',
 };
 
+// Helper to clean HTML to readable text
+function cleanHtmlToText(html) {
+  if (!html) return null;
+  try {
+    const $ = cheerioLoad(html);
+    // Remove script and style elements
+    $('script, style').remove();
+    // Get text and clean it
+    let text = $.text();
+    // Replace multiple whitespace with single space
+    text = text.replace(/\s+/g, ' ').trim();
+    // Replace multiple newlines with single newline
+    text = text.replace(/\n\s*\n/g, '\n').trim();
+    return text || null;
+  } catch {
+    return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() || null;
+  }
+}
+
 await Actor.init();
 
 const input = (await Actor.getInput()) || {};
@@ -154,7 +173,6 @@ function extractDetailFields($, url, seed) {
   const locationFallback =
     $('[data-ui="job-location"]').first().text().trim()
     || $('[itemprop="jobLocation"]').text().trim()
-    || $('.job-stats, .JobDetails__meta').find('li:contains("Location")').next().text().trim()
     || null;
 
   const safeTitle = seed?.title ?? titleFallback;
@@ -166,15 +184,11 @@ function extractDetailFields($, url, seed) {
   let description_text = null;
   let date_posted_extracted = null;
   let location_extracted = safeLocationSeed || null;
-  let salary = null;
-  let salary_currency = null;
+  let employment_type = null;
   let valid_through = null;
-  let benefits = null;
-  let qualifications = null;
-  let responsibilities = null;
-  let industry = null;
+  let salary = null;
 
-  // JSON-LD JobPosting
+  // JSON-LD JobPosting - extract from detail page schema
   try {
     const ldNodes = $('script[type="application/ld+json"]');
     for (let i = 0; i < ldNodes.length; i++) {
@@ -199,32 +213,25 @@ function extractDetailFields($, url, seed) {
         if (!valid_through && node.validThrough) {
           valid_through = String(node.validThrough).trim();
         }
-        if (!industry && node.industry) {
-          industry = String(node.industry).trim();
+        if (!employment_type && node.employmentType) {
+          const et = node.employmentType;
+          employment_type = Array.isArray(et) ? et.join(', ') : String(et).trim();
         }
 
-        // Salary extraction
+        // Salary extraction from JSON-LD
         if (!salary && node.baseSalary) {
           const bs = node.baseSalary;
           if (bs.value) {
             const val = bs.value;
-            if (val.value) salary = String(val.value).trim();
-            else if (val.minValue && val.maxValue) {
-              salary = `${val.minValue}-${val.maxValue}`;
+            if (val.value) {
+              salary = String(val.value).trim();
+            } else if (val.minValue && val.maxValue) {
+              const currency = val.currency || bs.currency || '';
+              salary = `${currency} ${val.minValue}-${val.maxValue}`.trim();
+            } else if (val.minValue) {
+              salary = `${val.minValue}+`;
             }
-            if (val.currency) salary_currency = String(val.currency).trim();
           }
-        }
-
-        // Benefits, qualifications, responsibilities
-        if (!benefits && node.benefits) {
-          benefits = Array.isArray(node.benefits) ? node.benefits.join(', ') : String(node.benefits).trim();
-        }
-        if (!qualifications && node.qualifications) {
-          qualifications = String(node.qualifications).trim();
-        }
-        if (!responsibilities && node.responsibilities) {
-          responsibilities = String(node.responsibilities).trim();
         }
 
         if (!location_extracted) {
@@ -266,17 +273,9 @@ function extractDetailFields($, url, seed) {
     if (html && html.trim()) description_html = html.trim();
   }
 
-  if (!description_text && description_html) {
-    try {
-      const $$ = cheerioLoad(description_html);
-      description_text = $$.text().replace(/\s+\n/g, '\n').replace(/\s{2,}/g, ' ').trim() || null;
-    } catch {
-      description_text = $('[data-ui="job-description"], [data-ui="job-content"], .JobDetails__content, .job-description').text().trim() || null;
-    }
-  }
-  if (!description_text) {
-    const txt = $('[data-ui="job-description"], [data-ui="job-content"], .JobDetails__content, .job-description').text().trim();
-    if (txt) description_text = txt;
+  // Clean description to readable text
+  if (description_html) {
+    description_text = cleanHtmlToText(description_html);
   }
 
   if (!location_extracted) {
@@ -293,37 +292,39 @@ function extractDetailFields($, url, seed) {
 
   const job_types = extractJobTypes($);
 
-  return {
+  // Build final result with ONLY fields that have data
+  const result = {
     title: safeTitle || null,
     company: safeCompany || null,
-    company_description: seed?.company_description || null,
-    company_logo: seed?.company_logo || null,
     location: location_extracted || null,
-    country: seed?.country || null,
-    region: seed?.region || null,
-    remote: seed?.remote || null,
-    telecommuting: seed?.telecommuting || null,
-    department: seed?.department || null,
-    employment_type: seed?.employment_type || null,
-    function: seed?.function || null,
-    experience: seed?.experience || null,
-    education: seed?.education || null,
     date_posted: date_posted_extracted ?? safeDateSeed ?? null,
-    created: seed?.created || null,
-    published_on: seed?.published_on || null,
-    valid_through: valid_through || null,
-    salary: salary || null,
-    salary_currency: salary_currency || null,
-    benefits: benefits || null,
-    qualifications: qualifications || null,
-    responsibilities: responsibilities || null,
-    job_types: job_types || null,
-    description_html: description_html || null,
-    description_text: description_text || null,
-    id: seed?.id || null,
-    shortcode: seed?.shortcode || null,
     url,
   };
+
+  // Add optional fields from API seed data
+  if (seed?.id) result.id = seed.id;
+  if (seed?.shortcode) result.shortcode = seed.shortcode;
+  if (seed?.department) result.department = seed.department;
+  if (seed?.workplace_type) result.workplace_type = seed.workplace_type;
+
+  // Add company info if available
+  if (seed?.company_name) result.company = seed.company_name;
+  if (seed?.company_logo) result.company_logo = seed.company_logo;
+
+  // Add location details from API
+  if (seed?.country) result.country = seed.country;
+
+  // Add detail page extracted fields
+  if (employment_type) result.employment_type = employment_type;
+  if (job_types && job_types.length > 0) result.job_types = job_types;
+  if (salary) result.salary = salary;
+  if (valid_through) result.valid_through = valid_through;
+
+  // Add descriptions (cleaned text)
+  if (description_html) result.description_html = description_html;
+  if (description_text) result.description_text = description_text;
+
+  return result;
 }
 
 // ---------- Build seeds ----------
@@ -431,30 +432,28 @@ const crawler = new CheerioCrawler({
         if (!detailUrl || state.seen.has(detailUrl)) continue;
         state.seen.add(detailUrl);
 
+        // Map ONLY fields that actually exist in Workable API
         const detailUserData = {
           label: 'DETAIL',
+          // Core fields from API
           id: job.id || null,
           shortcode: job.shortcode || null,
-          title: job.title || null,
-          company: job.company?.title || null,
-          company_description: job.company?.description || null,
+          title: job.title || job.full_title || null,
+          // Company info
+          company_name: job.company?.title || job.company?.name || null,
           company_logo: job.company?.logo || null,
-          location: job.location?.location_str || job.location?.city || null,
+          // Location info
+          location: job.location?.location_str || null,
           country: job.location?.country || null,
-          region: job.location?.region || null,
-          remote: job.remote || null,
-          telecommuting: job.location?.telecommuting || null,
+          // Workplace type (remote/hybrid/on_site)
+          workplace_type: job.workplace_type || null,
+          // Department
           department: job.department || null,
-          employment_type: job.employment_type || null,
-          function: job.function || null,
-          experience: job.experience || null,
-          education: job.education || null,
+          // Dates
           date_posted: job.created || job.published_on || null,
-          created: job.created || null,
-          published_on: job.published_on || null,
+          // URL reference
           url: detailUrl,
           seedId: seedId || null,
-          sourceListUrl: request.url,
         };
 
         await crawler.addRequests([{

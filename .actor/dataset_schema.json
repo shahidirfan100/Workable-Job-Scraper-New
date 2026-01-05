@@ -10,29 +10,16 @@
           "shortcode",
           "title",
           "company",
-          "company_description",
           "company_logo",
           "location",
           "country",
-          "region",
-          "remote",
-          "telecommuting",
+          "workplace_type",
           "department",
           "employment_type",
-          "function",
-          "experience",
-          "education",
-          "date_posted",
-          "created",
-          "published_on",
-          "valid_through",
-          "salary",
-          "salary_currency",
-          "benefits",
-          "qualifications",
-          "responsibilities",
           "job_types",
-          "description_html",
+          "salary",
+          "date_posted",
+          "valid_through",
           "description_text",
           "url"
         ]
@@ -52,16 +39,16 @@
             "label": "Location",
             "format": "text"
           },
-          "employment_type": {
-            "label": "Employment Type",
-            "format": "text"
-          },
-          "remote": {
-            "label": "Remote",
+          "workplace_type": {
+            "label": "Remote/On-site",
             "format": "text"
           },
           "department": {
             "label": "Department",
+            "format": "text"
+          },
+          "employment_type": {
+            "label": "Employment Type",
             "format": "text"
           },
           "salary": {
