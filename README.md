@@ -110,82 +110,39 @@ The scraper accepts the following parameters to customize your job extraction:
 
 ## Output Data
 
-The scraper extracts comprehensive job information with 25+ fields per job listing:
+The scraper extracts comprehensive job information with the following fields per job listing:
 
-### Core Information
-- `title` - Job title/position name
-- `company` - Company name
-- `url` - Direct URL to the job posting
-- `id` - Unique job identifier
-- `shortcode` - Workable shortcode reference
-
-### Classification & Type
-- `department` - Department or team
-- `employment_type` - Full-time, Part-time, Contract, etc.
-- `function` - Job function/category
-- `experience` - Required experience level
-- `education` - Education requirements
-- `job_types` - Array of job type tags
-
-### Location Details
-- `location` - Full location string
-- `country` - Country
-- `region` - State/region
-- `remote` - Remote work option flag
-- `telecommuting` - Telecommuting availability
-
-### Compensation & Benefits
-- `salary` - Salary information
-- `salary_currency` - Currency code
-- `benefits` - Benefits offered
+### Job Information
+| Field | Description |
+|-------|-------------|
+| `id` | Unique job identifier from Workable |
+| `title` | Job title/position name |
+| `company` | Company name |
+| `department` | Department or team |
+| `location` | Full location string |
+| `date_posted` | When the job was posted |
 
 ### Job Content
-- `description_html` - Full job description (HTML formatted)
-- `description_text` - Plain text description
-- `qualifications` - Required qualifications
-- `responsibilities` - Job responsibilities
-
-### Dates
-- `date_posted` - When the job was posted
-- `created` - Creation timestamp
-- `published_on` - Publication date
-- `valid_through` - Application deadline
-
-### Company Information
-- `company_description` - About the company
-- `company_logo` - Company logo URL
+| Field | Description |
+|-------|-------------|
+| `description_html` | Full job description (HTML formatted) |
+| `description_text` | Plain text description (cleaned, readable) |
+| `job_types` | Array of job type tags (Full-time, Part-time, etc.) |
+| `url` | Direct URL to the job posting |
 
 ### Sample Output
 
 ```json
 {
   "id": "12345",
-  "shortcode": "ABC123",
   "title": "Senior Software Engineer",
   "company": "TechCorp Inc",
-  "company_description": "Leading technology company specializing in cloud solutions",
-  "company_logo": "https://workable-assets.s3.amazonaws.com/...",
-  "location": "San Francisco, CA, United States",
-  "country": "United States",
-  "region": "California",
-  "remote": true,
-  "telecommuting": true,
   "department": "Engineering",
-  "employment_type": "Full-time",
-  "function": "Engineering",
-  "experience": "Senior",
-  "education": "Bachelor's degree in Computer Science or related field",
+  "location": "San Francisco, CA, United States",
   "date_posted": "2026-01-05",
-  "created": "2026-01-05T10:30:00Z",
-  "valid_through": "2026-02-05",
-  "salary": "$120,000 - $180,000",
-  "salary_currency": "USD",
-  "benefits": "Health insurance, 401k, flexible hours, remote work",
-  "job_types": ["Full-time", "Remote"],
-  "qualifications": "5+ years of experience with Python, AWS, and microservices",
-  "responsibilities": "Design and implement scalable backend services...",
   "description_html": "<div><h2>About the Role</h2><p>We are seeking...</p></div>",
-  "description_text": "About the Role\n\nWe are seeking a talented engineer...",
+  "description_text": "About the Role We are seeking a talented engineer to join our team...",
+  "job_types": ["Full-time", "Remote"],
   "url": "https://jobs.workable.com/view/ABC123"
 }
 ```
@@ -283,14 +240,6 @@ Speed depends on your concurrency settings and Apify plan.
 
 ### Is this legal?
 This scraper extracts publicly available job posting data. Always review and comply with Workable's terms of service and applicable laws in your jurisdiction.
-
-## Pricing
-
-This actor runs on the Apify platform under your account's usage limits. Typical costs:
-- **Free tier**: Up to 50-100 jobs monthly
-- **Paid plans**: From $49/month for larger volumes
-
-See [Apify Pricing](https://apify.com/pricing) for detailed information.
 
 ## Support & Feedback
 
